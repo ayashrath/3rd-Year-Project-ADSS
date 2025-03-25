@@ -7,6 +7,7 @@ dataset = Dataset()  # add theshold if you need
 scalar_label = dataset.clean(scalar_type="standard", save_scalar_val=True)["scalar_label"]
 train_loader, test_loader, inp_dim = dataset.return_tensor(batch_size=32)
 
+
 # Definition of the current Regression DNN
 class RegressionNN(nn.Module):
     def __init__(self, input_dim):
@@ -44,18 +45,6 @@ class RegressionNN(nn.Module):
         return self.regressor(x)
 
 
-"""
-DNN 0 - Regression Model on tt between 2nd Percentile and 98th Pencentile
-DNN 1 - Classification Model which predicts if an aircraft has tt < 5000 +- 100
-DNN 2 - Regression Model trained on tt > 2nd Percentile and tt < 5000 Percentile
-DNN 3 - Regression Model trained on tt > 5000 and tt < 98th Percentile
-
-loss_lst_dnn_0 = []
-loss_lst_dnn1 = []
-loss_lst_dnn2 = []
-loss_lst_dnn3 = []
-"""
-
 loss_lst = []
 
 # all
@@ -69,6 +58,4 @@ trainer = ModelTrainerDNN(
 )
 loss_lst += trainer.train_model()
 trainer.validate(loss_lst, simple=True, train=True)
-trainer.validate(loss_lst, simple=True)
-
-# trainer.save_onnx()
+trainer.validate(loss_lst, simple=True, save_onnx=False)
