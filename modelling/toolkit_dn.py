@@ -574,7 +574,7 @@ class ModelTrainerDNN:
             sorted_results = dict(sorted(results.items(), key=lambda x: x[1][0], reverse=True))
             plt.figure(figsize=(8, min(6, len(results)//2)))
             plt.barh(
-                list(sorted_results.keys()), 
+                list(sorted_results.keys()),
                 [x[0] for x in sorted_results.values()],
                 xerr=[x[1] for x in sorted_results.values()],
                 color='skyblue'
