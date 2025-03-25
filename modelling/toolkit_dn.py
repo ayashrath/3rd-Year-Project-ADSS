@@ -13,6 +13,7 @@ import joblib
 from tqdm import tqdm, notebook
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler, MaxAbsScaler, RobustScaler, StandardScaler
 from sklearn.metrics import mean_absolute_error, r2_score, mean_squared_error
+from sklearn.cluster import KMeans
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import torch.nn as nn
@@ -96,6 +97,13 @@ class Dataset:
 
     def fetch_cols_train(self, cond):
         return self.train_df[cond]
+
+    def get_feature_names(self) -> str:
+        if self.clean_bool:
+            val = "tt_s"
+        else:
+            val = "turnaroundtime_s"
+        return [col for col in self.train_df.columns if col != val]
 
     def filter_cols_train(self, num, operator: str):
         """
@@ -258,6 +266,9 @@ class Dataset:
         # for inp dimension, this is the simplest way to do it here
         return (train_loader, test_loader, x_train_tensor.shape[1])
 
+    def run_shap_test(self):
+        pass
+
 
 class ModelTrainerDNN:
     """
@@ -341,7 +352,7 @@ class ModelTrainerDNN:
     def train_model(self):
         try:
             self.model.to(self.device)
-        except RuntimeError as e:
+        except RuntimeError as e:  # incase it fails in the main step - IDK why it is here, but saw that it normal
             print(f"CUDA error: {e}")
             self.device = torch.device("cpu")
             self.model.to(self.device)
@@ -369,9 +380,9 @@ class ModelTrainerDNN:
 
             total_loss = self._train_loop(total_loss)
 
-            mean_loss = total_loss/len_batch_size
-            loss_lst.append(mean_loss)
-            epoch_range.set_postfix(loss=mean_loss)
+            mean_loss = total_loss/len_batch_size  # batch norm
+            loss_lst.append(mean_loss)  # to plot in graph if needed
+            epoch_range.set_postfix(loss=mean_loss)  # tqdm
 
             if self.add_patience:
                 if total_loss < min_loss:
@@ -537,14 +548,17 @@ class ModelTrainerDNN:
         else:
             plt.savefig(f"./stores/{dataset_str.lower()}_tt_curve_graph_{timestamp}.jpg")
 
-    def compute_feature_importance_pfi(self, dataset, n_shuffles: int = 10, criteria: str = "MSE", plot: bool = True):
+    def compute_feature_importance_pfi(
+        self, feature_names, n_shuffles: int = 10, criteria: str = "mse", plot: bool = True, method: str = "standard",
+        n_clusters: int = 7, cvt_result_std_py: bool = True
+    ):  # feature names should remain the same order as when created tensors
         self.model.eval()
 
+        # create the full thing, instead of batches
         x_test, y_test = [], []
         for x_batch, y_batch in self.test_loader:
             x_test.append(x_batch)
             y_test.append(y_batch)
-
         x_test = torch.cat(x_test).to(self.device)
         y_test = torch.cat(y_test).to(self.device)
 
@@ -552,42 +566,92 @@ class ModelTrainerDNN:
         with torch.no_grad():
             init_score = self._compute_metric(self.model(x_test), y_test, criteria)
 
-        # main stuff
-        results = {}
-        feature_names = dataset.get_feature_names()
-        for feature_idx in range(x_test.shape[1]):
-            shuffled_scores = []
-            for _ in range(n_shuffles):
-                x_shuffled = x_test.clone()
-                x_shuffled[:, feature_idx] = x_shuffled[
-                    torch.randperm(x_shuffled.shape[0], device=self.device), feature_idx
-                    ]
+        # creating cluster model if needed
+        cluster_model = None
+        if method == "subgroup" or method == "subgroups":
+            cluster_model = KMeans(n_clusters=n_clusters, random_state=314)
+            cluster_model.fit(x_test.cpu().numpy())
 
+        results = {}
+        for feature_idx in range(x_test.shape[1]):  # to change one at a time
+            shuffled_scores = []
+            for _ in range(n_shuffles):  # to get mean result and std dev
+                x_shuffled = x_test.clone()  # as it shares the same memory stuff
+                x_shuffled = self._shuffle_data(x_shuffled, feature_idx, method, cluster_model)
+
+                # grade it again with shuffled
                 with torch.no_grad():
                     score = self._compute_metric(self.model(x_shuffled), y_test, criteria)
-                shuffled_scores.append(score - init_score)
+                shuffled_scores.append(score - init_score)  # fi - feature importance
 
             results[f"{feature_names[feature_idx]}"] = (np.mean(shuffled_scores), np.std(shuffled_scores))
 
         if plot:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            sorted_results = dict(sorted(results.items(), key=lambda x: x[1][0], reverse=True))
-            plt.figure(figsize=(8, min(6, len(results)//2)))
-            plt.barh(
-                list(sorted_results.keys()),
-                [x[0] for x in sorted_results.values()],
-                xerr=[x[1] for x in sorted_results.values()],
-                color='skyblue'
-            )
-            plt.title(f"PFI ({criteria.upper()}, Δ={init_score:.3f})")
-            plt.xlabel("Importance (Score Decrease)")
-            plt.tight_layout()
-            plt.savefig(f"./stores/pfi_{criteria}_{timestamp}.png", bbox_inches='tight')
-            plt.close()
+            self._plt_pfi(results, criteria, init_score, method=method)
+
+        if cvt_result_std_py:  # as when printing it we get np.float64() making it look messy
+            results = {
+                key: (
+                    float(value[0]),
+                    float(value[1])
+                )
+                for key, value in results.items()
+            }
 
         return results
 
+    def _plt_pfi(self, results, criteria, init_score, method):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if method == "standard":
+            method_str = "Marginal PFI"
+        elif method == "subgroup" or method == "subgroups":  # conditional
+            method_str = "Conditional PFI using Subgroups"
+
+        sorted_results = dict(sorted(results.items(), key=lambda x: x[1][0], reverse=True))  # sort it as more useful
+
+        plt.figure(figsize=(8, 6))  # control size
+        plt.barh(
+            list(sorted_results.keys()),
+            [x[0] for x in sorted_results.values()],
+            xerr=[x[1] for x in sorted_results.values()],
+            color='skyblue'
+        )  # a good way to view it with the val and std dev
+
+        plt.title(f"Initial {criteria.upper()}={init_score:.3f} [Line <=> std_dev] [test] [method={method_str}]")
+
+        if criteria.lower() != "r2":
+            plt.xlabel(f"Importance ({criteria.upper()} Increase)")
+        else:
+            plt.xlabel("Importance (R² Decrease)")  # as r2 decreases if a significant var is shuffled
+
+        plt.tight_layout()
+        plt.savefig(f"./stores/pfi_{criteria}_{timestamp}.png", bbox_inches='tight')
+        plt.close()
+
+    def _shuffle_data(self, features, feature_id, method: str = "standard", cluster_model=None):
+        if method == "standard":
+            features[:, feature_id] = features[torch.randperm(features.shape[0], device=self.device), feature_id]
+        elif method == "subgroup" or method == "subgroups":  # conditional
+            if cluster_model is None:
+                raise ValueError("A Cluster Model is needed for this kind of shuffling")
+
+            # gets the result from cluster model
+            clusters = cluster_model.predict(features.cpu().numpy())
+            clusters = torch.from_numpy(clusters).to(self.device)
+
+            # only shuffles in its own cluster and loop
+            for cluster_id in torch.unique(clusters):
+                mask = (clusters == cluster_id)
+                subgroup_indices = torch.where(mask)[0]
+                permuted_ind = subgroup_indices[torch.randperm(len(subgroup_indices), device=self.device)]
+                features[mask, feature_id] = features[permuted_ind, feature_id]
+        else:
+            raise TypeError("This form of shuffling is not supported")
+
+        return features
+
     def _compute_metric(self, preds: torch.Tensor, target: torch.Tensor, metric: str):
+        # computes the metrics for pfi - as unline torch it can't be assigned to vars
         y_true, y_pred = target.cpu().numpy(), preds.cpu().numpy()
         if metric.lower() == "mse":
             return mean_squared_error(y_true, y_pred)
@@ -605,4 +669,4 @@ class ModelTrainerDNN:
 if __name__ == "__main__":
     datasets = Dataset()
     datasets.clean()
-    print(datasets.fetch_info())
+    print(datasets.fetch_info())  # maybe will update it later

@@ -4,7 +4,7 @@ from toolkit_dn import Dataset, ModelTrainerDNN
 
 
 dataset = Dataset()  # add theshold if you need
-scalar_label = dataset.clean(scalar_type="standard", save_scalar_val=True)["scalar_label"]
+scalar_label = dataset.clean(scalar_type="standard", save_scalar_val=False)["scalar_label"]
 train_loader, test_loader, inp_dim = dataset.return_tensor(batch_size=32)
 
 

@@ -1,10 +1,11 @@
 import torch.nn as nn
 import torch.optim as optim
-from toolkit import Dataset, ModelTrainerDNN
+from pprint import pprint
+from toolkit_dn import Dataset, ModelTrainerDNN
 
 dataset = Dataset()  # add theshold if you need
-dataset.clean()
-train_loader, test_loader, inp_dim, scalar_label = dataset.format_data("standard", save_scalar_val=True, batch_size=32)
+scalar_label = dataset.clean(scalar_type="standard", save_scalar_val=False)["scalar_label"]
+train_loader, test_loader, inp_dim = dataset.return_tensor(batch_size=32)
 
 
 # Definition of the current Regression DNN
@@ -31,14 +32,9 @@ class RegressionNN(nn.Module):
             nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             nn.LeakyReLU(),
-            nn.Dropout(0.1),
-
-            nn.Linear(64, 32),
-            nn.BatchNorm1d(32),
-            nn.LeakyReLU(),
         )
 
-        self.regressor = nn.Linear(32, 1)
+        self.regressor = nn.Linear(64, 1)
 
         for layer in self.feature_extractor:
             if isinstance(layer, nn.Linear):
@@ -48,11 +44,29 @@ class RegressionNN(nn.Module):
         x = self.feature_extractor(x)
         return self.regressor(x)
 
+
+def p_print(dict_var):
+    pprint(dict_var, indent=2)
+
+
 model = RegressionNN(inp_dim)
 epoch = 50
 lr = 0.1
 criteria = nn.HuberLoss(delta=1.0)
 optimiser = optim.SGD(model.parameters(), lr=lr)
 trainer = ModelTrainerDNN(model, train_loader, test_loader, scalar_label, criteria, optimiser, epoch)
-trainer.load_model("dnn_20250318_023815.pth")
-trainer.compute_feature_importance_pfi()
+trainer.load_model("./stores/dnn_20250324_145525.pth")
+feature_names = dataset.get_feature_names()
+
+print("MSE")
+p_print(trainer.compute_feature_importance_pfi(
+    feature_names, criteria="mse", n_shuffles=10, plot=True, method="subgroup"
+))
+print("MAE")
+p_print(trainer.compute_feature_importance_pfi(
+    feature_names, criteria="mae", n_shuffles=10, plot=True, method="subgroup"
+))
+print("R2")
+p_print(trainer.compute_feature_importance_pfi(
+    feature_names, criteria="r2", n_shuffles=10, plot=True, method="subgroup"
+))
