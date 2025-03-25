@@ -56,9 +56,11 @@ class Dataset:
 
     def fetch_tt_nth_percentile(self, n: int):
         if self.clean_bool:
-            raise RuntimeError("Run before clean")
+            tt_str = "tt_s"
+        else:
+            tt_str = "turnaroundtime_s"
         temp_df = pd.concat([self.train_df, self.test_df], ignore_index=True)
-        tt = np.array(temp_df["turnaroundtime_s"])
+        tt = np.array(temp_df[tt_str])
         return np.percentile(tt, n)
 
     def update_train_test(self, num, operator: str):
