@@ -1,1 +1,5 @@
 *.csv
+*.pth
+*.png
+*.joblib
+*.onnx
