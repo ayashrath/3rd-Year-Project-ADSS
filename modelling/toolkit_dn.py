@@ -38,7 +38,7 @@ class Dataset:
     accessor for it, just access the object var :|
     """
     def __init__(
-        self, train: str = "train.csv", test: str = "test.csv",
+        self, train: str = "datasets/train.csv", test: str = "datasets/test.csv",
         loading_status: str = True, remove_threshold: float = 0.35
     ):
         self.train_df = pd.read_csv(train)
@@ -118,7 +118,16 @@ class Dataset:
     def isin_cols_train(self, vals):
         return self.train_df[self.train_df.isin(vals)]
 
-    def clean(self, remove_outlier_tt=True, remove_upper_lower_thresh: int = 1):
+    def clean(
+        self, remove_outlier_tt=True, remove_upper_lower_thresh: int = 1, save_scalar_val: bool = True,
+        scalar_type: str = "minmax"
+    ):
+
+        outlier_thresh_upper = self.fetch_tt_nth_percentile(100-remove_upper_lower_thresh)
+        self.update_train_test(outlier_thresh_upper, "<")
+        outlier_thresh_lower = self.fetch_tt_nth_percentile(remove_upper_lower_thresh)
+        self.update_train_test(outlier_thresh_lower, ">")
+
         # consts
         drop_cols = ["Unnamed: 0.2", "Unnamed: 0.1", "Unnamed: 0", "datetime", "start_time"]
         rename_cols = {
@@ -177,26 +186,11 @@ class Dataset:
             # fill empty with 0
             df.fillna(0, inplace=True)
 
-        outlier_thresh_upper = self.fetch_tt_nth_percentile(100-remove_upper_lower_thresh)
-        self.update_train_test(outlier_thresh_upper, "<")
-        outlier_thresh_lower = self.fetch_tt_nth_percentile(remove_upper_lower_thresh)
-        self.update_train_test(outlier_thresh_lower, ">")
-
-        self.clean_bool = True
-
-        return le_dict  # in the case there is a need for decoding
-
-    def drop_cols(self, cols_lst: List[str]):
-        self.train_df.drop(columns=cols_lst)
-        self.test_df.drop(columns=cols_lst)
-
-    def format_data(self, scalar_type: str = "minmax", save_scalar_val: bool = True, batch_size: int = 32) -> Tuple:
-
         # X = input, Y = output
-        x_train = self.train_df.drop(columns=["tt_s"]).values  # convert into np mat
-        y_train = self.train_df["tt_s"].values.reshape(-1, 1)  # to make it a mat, else will be just an array
-        x_test = self.test_df.drop(columns=["tt_s"]).values
-        y_test = self.test_df["tt_s"].values.reshape(-1, 1)
+        self.x_train = self.train_df.drop(columns=["tt_s"]).values  # convert into np mat
+        self.y_train = self.train_df["tt_s"].values.reshape(-1, 1)  # to make it a mat, else will be just an array
+        self.x_test = self.test_df.drop(columns=["tt_s"]).values
+        self.y_test = self.test_df["tt_s"].values.reshape(-1, 1)
 
         # The label and features should not share the same scalar to maininatin thier distributions
         # All features should use the same scalar to mainintain their relationship
@@ -215,11 +209,13 @@ class Dataset:
             scalar_label = StandardScaler()
         else:
             raise AttributeError("This kind of scalar is not supported, idiot :)")
+        le_dict["scalar_label"] = scalar_label
+        le_dict["scalar_feature"] = scalar_feature
 
-        x_train = scalar_feature.fit_transform(x_train)
-        y_train = scalar_label.fit_transform(y_train)
-        x_test = scalar_feature.fit_transform(x_test)
-        y_test = scalar_label.fit_transform(y_test)
+        self.x_train = scalar_feature.fit_transform(self.x_train)
+        self.y_train = scalar_label.fit_transform(self.y_train)
+        self.x_test = scalar_feature.fit_transform(self.x_test)
+        self.y_test = scalar_label.fit_transform(self.y_test)
 
         # saving it as important whenever you might want to deploy it
         if save_scalar_val:
@@ -227,19 +223,29 @@ class Dataset:
             joblib.dump(scalar_feature, f'./stores/feature_scaler_{timestamp}.joblib')
             joblib.dump(scalar_label, f'./stores/label_scaler_{timestamp}.joblib')
 
+        self.clean_bool = True
+
+        return le_dict  # in the case there is a need for decoding
+
+    def drop_cols(self, cols_lst: List[str]):
+        self.train_df.drop(columns=cols_lst)
+        self.test_df.drop(columns=cols_lst)
+
+    def return_tensor(self, batch_size: int = 32) -> Tuple:
+
         # create the tensors
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         try:
-            x_train_tensor = torch.tensor(x_train, dtype=torch.float32).to(device)
-            y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
-            x_test_tensor = torch.tensor(x_test, dtype=torch.float32).to(device)
-            y_test_tensor = torch.tensor(y_test, dtype=torch.float32).to(device)
+            x_train_tensor = torch.tensor(self.x_train, dtype=torch.float32).to(device)
+            y_train_tensor = torch.tensor(self.y_train, dtype=torch.float32).to(device)
+            x_test_tensor = torch.tensor(self.x_test, dtype=torch.float32).to(device)
+            y_test_tensor = torch.tensor(self.y_test, dtype=torch.float32).to(device)
         except RuntimeError as e:
             print(f"CUDA error: {e}")
-            x_train_tensor = torch.tensor(x_train, dtype=torch.float32)
-            y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
-            x_test_tensor = torch.tensor(x_test, dtype=torch.float32)
-            y_test_tensor = torch.tensor(y_test, dtype=torch.float32)
+            x_train_tensor = torch.tensor(self.x_train, dtype=torch.float32)
+            y_train_tensor = torch.tensor(self.y_train, dtype=torch.float32)
+            x_test_tensor = torch.tensor(self.x_test, dtype=torch.float32)
+            y_test_tensor = torch.tensor(self.y_test, dtype=torch.float32)
 
         # Use TensorDatasets to make datasets and then Create Dataloaders (does batch and shuffling as needed)
         train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
@@ -248,7 +254,7 @@ class Dataset:
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=True)  # order can exist
 
         # for inp dimension, this is the simplest way to do it here
-        return (train_loader, test_loader, x_train_tensor.shape[1], scalar_label)
+        return (train_loader, test_loader, x_train_tensor.shape[1])
 
 
 class ModelTrainerDNN:
@@ -276,6 +282,7 @@ class ModelTrainerDNN:
         self.notebook = jupter_notebook
         self.label_scalar = label_scalar
         self.auto_save_model = auto_save_model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def update_epoch(self, epoch):
         self.epoch = epoch
@@ -289,13 +296,12 @@ class ModelTrainerDNN:
     def update_optimiser(self, optimiser):
         self.optimiser = optimiser
 
-    def save_onnx(self):
+    def _save_onnx(self):
         """
         My suggestion - use netron to view the file
         """
         # incase you run it without training
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(device)
+        self.model.to(self.device)
 
         # gets feature count
         first_sample, _ = next(iter(self.train_loader))
@@ -305,7 +311,7 @@ class ModelTrainerDNN:
         batch_size = self.train_loader.batch_size
 
         # a dummy data to pass though for onnx
-        dummy_input = torch.randn(batch_size, feature_count).to(device)
+        dummy_input = torch.randn(batch_size, feature_count).to(self.device)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
@@ -326,18 +332,17 @@ class ModelTrainerDNN:
         except Exception:
             print("Error in exporting to ONNX!!")
 
-    def save_model(self):
+    def _save_model(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         torch.save(self.model.state_dict(), f'./stores/dnn_{timestamp}.pth')
 
     def train_model(self):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         try:
-            self.model.to(device)
+            self.model.to(self.device)
         except RuntimeError as e:
             print(f"CUDA error: {e}")
-            device = torch.device("cpu")
-            self.model.to(device)
+            self.device = torch.device("cpu")
+            self.model.to(self.device)
 
         # patience init
         if self.add_patience:
@@ -360,19 +365,7 @@ class ModelTrainerDNN:
             self.model.train()  # train mode
             total_loss = 0  # all batches loss
 
-            for x_batch, y_batch in self.train_loader:
-                try:
-                    x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                except RuntimeError as e:
-                    print(f"CUDA error: {e}")
-                    x_batch, y_batch = x_batch, y_batch
-
-                self.optimiser.zero_grad()
-                predictions = self.model(x_batch)
-                loss = self.criteria(predictions, y_batch)
-                loss.backward()
-                self.optimiser.step()
-                total_loss += loss.item()  # add single value tensor loss for batch to total
+            total_loss = self._train_loop(total_loss)
 
             mean_loss = total_loss/len_batch_size
             loss_lst.append(mean_loss)
@@ -390,237 +383,168 @@ class ModelTrainerDNN:
                         break
 
         if self.auto_save_model:
-            self.save_model()
+            self._save_model()
 
         return loss_lst
 
-    def validate(self, loss_lst, simple: bool = True, train: bool = False, display_df: bool = False):
+    def _train_loop(self, total_loss):
+        for x_batch, y_batch in self.train_loader:
+            try:
+                x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
+            except RuntimeError as e:
+                print(f"CUDA error: {e}")
+                x_batch, y_batch = x_batch, y_batch
+
+            self.optimiser.zero_grad()
+            predictions = self.model(x_batch)
+            loss = self.criteria(predictions, y_batch)
+            loss.backward()
+            self.optimiser.step()
+            total_loss += loss.item()  # add single value tensor loss for batch to total
+        return total_loss
+
+    def validate(self, loss_lst, simple: bool = True, train: bool = False, display_df: bool = False, save_onnx=False):
         """
         Can be shortened :(
         """
-        if not train:
-            print("\nTesting Data Validation")
-            # validate
-            self.model.eval()
-
-            test_loss = 0
-            y_true_test = []
-            y_predicted_test = []
-
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            with torch.no_grad():
-                for x_batch, y_batch in self.test_loader:
-                    try:
-                        x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                    except RuntimeError as e:
-                        print(f"CUDA error: {e}")
-                        x_batch, y_batch = x_batch, y_batch
-
-                    predictions = self.model(x_batch)
-                    test_loss += self.criteria(predictions, y_batch).item()
-
-                    # collect actual & predicted values
-                    y_true_test.extend(y_batch.cpu().numpy())
-                    y_predicted_test.extend(predictions.cpu().numpy())
-
-            # Processing
-            y_true_test = np.array(y_true_test).flatten()
-            y_predicted_test = np.array(y_predicted_test).flatten()
-
-            # Descale
-            y_true_test = self.label_scalar.inverse_transform(y_true_test.reshape(-1, 1)).flatten()
-            y_predicted_test = self.label_scalar.inverse_transform(y_predicted_test.reshape(-1, 1)).flatten()
-
-            # Scores
-            mae = mean_absolute_error(y_true_test, y_predicted_test)
-            mse = mean_squared_error(y_true_test, y_predicted_test)
-            r2 = r2_score(y_true_test, y_predicted_test)
-
-            print("==============================")
-            print("Stat Metrics")
-            print("==============================")
-            print(f"MAE Value: {mae}")
-            print(f"MSE Value: {mse}")
-            print(f"R² Value: {r2}")
-
-            if not simple:
-                if display_df:
-                    # Summary df
-                    print("==============================")
-                    print("Prediction DF")
-                    print("==============================")
-
-                    error_abs = np.abs(y_true_test - y_predicted_test)
-                    summary_df = pd.DataFrame({
-                        'True Value': y_true_test,
-                        'Predicted Value': y_predicted_test,
-                        'Absolute Error': error_abs
-                    })
-
-                    if self.notebook:
-                        display(summary_df)
-                    else:
-                        print(summary_df)
-
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-                # Loss Progression - Training
-                plt.figure(figsize=(30, 10))
-                plt.plot(range(1, len(loss_lst) + 1), loss_lst, label="Training Loss")
-                plt.xlabel("Index")
-                plt.ylabel("Loss")
-                plt.title("Training Loss Progression")
-
-                if self.notebook:
-                    plt.show()
-                else:
-                    plt.savefig(f"./stores/training_loss_graph_{timestamp}.jpg")
-
-                # Accuracy Graph
-                plt.figure(figsize=(30, 10))
-                plt.scatter(y_true_test, y_predicted_test, label="true vs predicted")  # ascending order and y = x
-                plt.plot([y_true_test.min(), y_true_test.max()], [y_true_test.min(), y_true_test.max()], "--r", "1")
-                plt.xlabel("True Value")
-                plt.ylabel("Predicted Value")
-                plt.title("Accuracy Graph (y=x is 100%)")
-                plt.legend()
-
-                if self.notebook:
-                    plt.show()
-                else:
-                    plt.savefig(f"./stores/test_accuracy_graph_{timestamp}.jpg")
-
-                # TT Behaviour Graph
-                plt.figure(figsize=(30, 10))
-                plt.scatter(np.arange(len(y_true_test)), y_true_test, label="True Value")  # ascending order
-                plt.plot(np.arange(len(y_true_test)), y_predicted_test, "r", label="Predicted Value")
-                plt.xlabel("Index")
-                plt.ylabel("Time (min)")
-                plt.title("Curve of TT and Predicted TT functions")
-                plt.legend()
-
-                if self.notebook:
-                    plt.show()
-                else:
-                    plt.savefig(f"./stores/test_tt_curve_graph_{timestamp}.jpg")
-
+        if train:
+            dataset_str = "Train"
+            data_loader = self.train_loader
         else:
-            print("\nTraining Data Validation")
-            # validate
-            self.model.eval()
+            dataset_str = "Test"
+            data_loader = self.test_loader
 
-            train_loss = 0
-            y_true_train = []
-            y_predicted_train = []
+        print(f"\n{dataset_str}ing Data Validation")
+        descaled_val_dict = self._validate_calc(data_loader)
+        y_true = descaled_val_dict["y_true"]
+        y_pred = descaled_val_dict["y_pred"]
 
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        mae = mean_absolute_error(y_true, y_pred)
+        mse = mean_squared_error(y_true, y_pred)
+        r2 = r2_score(y_true, y_pred)
 
-            with torch.no_grad():
-                for x_batch, y_batch in self.train_loader:
-                    try:
-                        x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                    except RuntimeError as e:
-                        print(f"CUDA error: {e}")
-                        x_batch, y_batch = x_batch, y_batch
+        print("==============================")
+        print(f"{dataset_str} Stat Metrics")
+        print("==============================")
+        print(f"MAE Value: {mae}")
+        print(f"MSE Value: {mse}")
+        print(f"R² Value: {r2}")
 
-                    predictions = self.model(x_batch)
-                    train_loss += self.criteria(predictions, y_batch).item()
+        if not simple:
+            if display_df:
+                # Summary df
+                print("==============================")
+                print("Prediction DF")
+                print("==============================")
 
-                    # collect actual & predicted values
-                    y_true_train.extend(y_batch.cpu().numpy())
-                    y_predicted_train.extend(predictions.cpu().numpy())
+                error_abs = np.abs(y_true - y_pred)
+                summary_df = pd.DataFrame({
+                    'True Value': y_true,
+                    'Predicted Value': y_pred,
+                    'Absolute Error': error_abs
+                })
 
-            # Processing
-            y_true_train = np.array(y_true_train).flatten()
-            y_predicted_train = np.array(y_predicted_train).flatten()
+                if self.notebook:
+                    display(summary_df)
+                else:
+                    print(summary_df)
 
-            # Descale
-            y_true_train = self.label_scalar.inverse_transform(y_true_train.reshape(-1, 1)).flatten()
-            y_predicted_train = self.label_scalar.inverse_transform(y_predicted_train.reshape(-1, 1)).flatten()
-
-            # Scores
-            mae = mean_absolute_error(y_true_train, y_predicted_train)
-            mse = mean_squared_error(y_true_train, y_predicted_train)
-            r2 = r2_score(y_true_train, y_predicted_train)
-
-            print("==============================")
-            print("Stat Metrics")
-            print("==============================")
-            print(f"MAE Value: {mae}")
-            print(f"MSE Value: {mse}")
-            print(f"R² Value: {r2}")
-
+        if not train:
             if not simple:
-                if display_df:
-                    # Summary df
-                    print("==============================")
-                    print("Prediction DF")
-                    print("==============================")
-
-                    error_abs = np.abs(y_true_train - y_predicted_train)
-                    summary_df = pd.DataFrame({
-                        'True Value': y_true_train,
-                        'Predicted Value': y_predicted_train,
-                        'Absolute Error': error_abs
-                    })
-
-                    if self.notebook:
-                        display(summary_df)
-                    else:
-                        print(summary_df)
-
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self._plot_validate(y_true, y_pred, dataset_str, timestamp, loss_lst)
 
-                # Loss Progression - Training
-                plt.figure(figsize=(30, 10))
-                plt.plot(range(1, len(loss_lst) + 1), loss_lst, label="Training Loss")
-                plt.xlabel("Index")
-                plt.ylabel("Loss")
-                plt.title("Training Loss Progression")
+        if save_onnx:
+            self._save_onnx()
 
-                if self.notebook:
-                    plt.show()
-                else:
-                    plt.savefig(f"./stores/train_loss_graph_{timestamp}.jpg")
+    def _validate_calc(self, data_loader):
+        # validate
+        self.model.eval()
 
-                # Accuracy Graph
-                plt.figure(figsize=(30, 10))
-                plt.scatter(y_true_train, y_predicted_train, label="true vs predicted")  # ascending order and y = x
-                plt.plot([y_true_train.min(), y_true_train.max()], [y_true_train.min(), y_true_train.max()], "--r", "1")
-                plt.xlabel("True Value")
-                plt.ylabel("Predicted Value")
-                plt.title("Accuracy Graph (y=x is 100%)")
-                plt.legend()
+        test_loss = 0
+        y_true = []
+        y_pred = []
 
-                if self.notebook:
-                    plt.show()
-                else:
-                    plt.savefig(f"./stores/train_accuracy_graph_{timestamp}.jpg")
+        with torch.no_grad():
+            for x_batch, y_batch in data_loader:
+                try:
+                    x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
+                except RuntimeError as e:
+                    print(f"CUDA error: {e}")
+                    x_batch, y_batch = x_batch, y_batch
 
-                # TT Behaviour Graph
-                plt.figure(figsize=(30, 10))
-                plt.scatter(np.arange(len(y_true_train)), y_true_train, label="True Value")  # ascending order
-                plt.plot(np.arange(len(y_true_train)), y_predicted_train, "r", label="Predicted Value")
-                plt.xlabel("Index")
-                plt.ylabel("Time (min)")
-                plt.title("Curve of TT and Predicted TT functions")
-                plt.legend()
+                predictions = self.model(x_batch)
+                test_loss += self.criteria(predictions, y_batch).item()
 
-                if self.notebook:
-                    plt.show()
-                else:
-                    plt.savefig(f"./stores/train_tt_curve_graph_{timestamp}.jpg")
-    
-    def compute_feature_importance_pfi(self, n_shuffles: int = 10, criteria: str = "MSE", plot: bool = True):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                # collect actual & predicted values
+                y_true.extend(y_batch.cpu().numpy())
+                y_pred.extend(predictions.cpu().numpy())
+
+        # Processing
+        y_true = np.array(y_true).flatten()
+        y_pred = np.array(y_pred).flatten()
+
+        # Descale
+        y_true = self.label_scalar.inverse_transform(y_true.reshape(-1, 1)).flatten()
+        y_pred = self.label_scalar.inverse_transform(y_pred.reshape(-1, 1)).flatten()
+
+        return {
+            "y_true": y_true,
+            "y_pred": y_pred,
+        }
+
+    def _plot_validate(self, y_true, y_pred, dataset_str, timestamp, loss_lst):
+        if dataset_str == "Train":
+            # Loss Progression - Training
+            plt.figure(figsize=(30, 10))
+            plt.plot(range(1, len(loss_lst) + 1), loss_lst, label=f"{dataset_str}ing Loss")
+            plt.xlabel("Index")
+            plt.ylabel("Loss")
+            plt.title("Training Loss Progression")
+
+            if self.notebook:
+                plt.show()
+            else:
+                plt.savefig(f"./stores/{dataset_str.lower()}ing_loss_graph_{timestamp}.jpg")
+
+        # Accuracy Graph
+        plt.figure(figsize=(30, 10))
+        plt.scatter(y_true, y_pred, label="true vs predicted")  # ascending order and y = x
+        plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], "--r", "1")
+        plt.xlabel("True Value")
+        plt.ylabel("Predicted Value")
+        plt.title("Accuracy Graph (y=x is 100%)")
+        plt.legend()
+
+        if self.notebook:
+            plt.show()
+        else:
+            plt.savefig(f"./stores/{dataset_str.lower()}_accuracy_graph_{timestamp}.jpg")
+
+        # TT Behaviour Graph
+        plt.figure(figsize=(30, 10))
+        plt.scatter(np.arange(len(y_true)), y_true, label="True Value")  # ascending order
+        plt.plot(np.arange(len(y_true)), y_pred, "r", label="Predicted Value")
+        plt.xlabel("Index")
+        plt.ylabel("Time (min)")
+        plt.title("Curve of TT and Predicted TT functions")
+        plt.legend()
+
+        if self.notebook:
+            plt.show()
+        else:
+            plt.savefig(f"./stores/{dataset_str.lower()}_tt_curve_graph_{timestamp}.jpg")
+
+    def compute_feature_importance_pfi(self, dataset, n_shuffles: int = 10, criteria: str = "MSE", plot: bool = True):
         self.model.eval()
 
         x_test, y_test = [], []
         for x_batch, y_batch in self.test_loader:
-            x_test.append(x_test)
-            y_test.append(y_test)
-        x_test, y_test = torch.cat(x_test), torch.cat(y_test)
+            x_test.append(x_batch)
+            y_test.append(y_batch)
+
+        x_test = torch.cat(x_test).to(self.device)
+        y_test = torch.cat(y_test).to(self.device)
 
         # normal score
         with torch.no_grad():
@@ -628,17 +552,20 @@ class ModelTrainerDNN:
 
         # main stuff
         results = {}
+        feature_names = dataset.get_feature_names()
         for feature_idx in range(x_test.shape[1]):
             shuffled_scores = []
             for _ in range(n_shuffles):
                 x_shuffled = x_test.clone()
-                x_shuffled[:, feature_idx] = x_shuffled[torch.randperm(x_shuffled.shape[0]), feature_idx]
+                x_shuffled[:, feature_idx] = x_shuffled[
+                    torch.randperm(x_shuffled.shape[0], device=self.device), feature_idx
+                    ]
 
                 with torch.no_grad():
                     score = self._compute_metric(self.model(x_shuffled), y_test, criteria)
-                shuffled_scores.append(init_score - score)
+                shuffled_scores.append(score - init_score)
 
-            results[f"feature_{feature_idx}"] = (np.mean(shuffled_scores), np.std(shuffled_scores))
+            results[f"{feature_names[feature_idx]}"] = (np.mean(shuffled_scores), np.std(shuffled_scores))
 
         if plot:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -653,7 +580,7 @@ class ModelTrainerDNN:
             plt.title(f"PFI ({criteria.upper()}, Δ={init_score:.3f})")
             plt.xlabel("Importance (Score Decrease)")
             plt.tight_layout()
-            plt.savefig(f"./stores/pfi_{timestamp}.png", bbox_inches='tight')
+            plt.savefig(f"./stores/pfi_{criteria}_{timestamp}.png", bbox_inches='tight')
             plt.close()
 
         return results
@@ -669,9 +596,8 @@ class ModelTrainerDNN:
         raise ValueError(f"Unknown metric: {metric}")
 
     def load_model(self, model_path: str):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.load_state_dict(torch.load(model_path), map_location=device)
-        self.model.to(device)
+        self.model.load_state_dict(torch.load(model_path, weights_only=True))
+        self.model.to(self.device)
 
 
 if __name__ == "__main__":

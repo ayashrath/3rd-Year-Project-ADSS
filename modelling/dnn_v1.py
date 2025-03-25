@@ -4,9 +4,8 @@ from toolkit_dn import Dataset, ModelTrainerDNN
 
 
 dataset = Dataset()  # add theshold if you need
-dataset.clean()
-train_loader, test_loader, inp_dim, scalar_label = dataset.format_data("standard", save_scalar_val=True, batch_size=32)
-
+scalar_label = dataset.clean(scalar_type="standard", save_scalar_val=True)["scalar_label"]
+train_loader, test_loader, inp_dim = dataset.return_tensor(batch_size=32)
 
 # Definition of the current Regression DNN
 class RegressionNN(nn.Module):
@@ -61,13 +60,15 @@ loss_lst = []
 
 # all
 model = RegressionNN(inp_dim)
-epoch = 100
+epoch = 1
 lr = 0.001
 criteria = nn.HuberLoss(delta=1.0)
 optimiser = optim.Adam(model.parameters(), lr=lr)
-trainer = ModelTrainerDNN(model, train_loader, test_loader, scalar_label, criteria, optimiser, epoch)
+trainer = ModelTrainerDNN(
+    model, train_loader, test_loader, scalar_label, criteria, optimiser, epoch, auto_save_model=False
+)
 loss_lst += trainer.train_model()
-trainer.validate(loss_lst, simple=False, train=True)
-trainer.validate(loss_lst, simple=False)
+trainer.validate(loss_lst, simple=True, train=True)
+trainer.validate(loss_lst, simple=True)
 
 # trainer.save_onnx()
