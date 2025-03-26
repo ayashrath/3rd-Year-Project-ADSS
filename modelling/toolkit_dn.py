@@ -107,7 +107,7 @@ class Dataset:
 
     def filter_cols_train(self, num, operator: str):
         """
-        <= means all enties less than
+        < means all enties less than and equal to
         > means all entries greater than
         """
         if self.clean_bool:
@@ -184,9 +184,12 @@ class Dataset:
                 df[f"{prefix} year"] = df[f"{prefix}_datetime"].dt.year
                 df[f"{prefix} month"] = df[f"{prefix}_datetime"].dt.month
                 df[f"{prefix} day"] = df[f"{prefix}_datetime"].dt.day
-                df[f"{prefix} hour"] = df[f"{prefix}_datetime"].dt.hour
-                df[f"{prefix} minute"] = df[f"{prefix}_datetime"].dt.minute
-                df[f"{prefix} second"] = df[f"{prefix}_datetime"].dt.second
+                df[f"{prefix} hour sin"] = np.sin(2 * np.pi * df[f"{prefix}_datetime"].dt.hour / 24) + 1
+                df[f"{prefix} hour cos"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.hour / 24) + 1
+                df[f"{prefix} minute sin"] = np.sin(2 * np.pi * df[f"{prefix}_datetime"].dt.minute / 60) + 1
+                df[f"{prefix} minute cos"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.minute / 60) + 1
+                df[f"{prefix} second sin"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.second / 60) + 1 
+                df[f"{prefix} second cos"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.second / 60) + 1
 
             df.drop(columns=["start_datetime", "end_datetime"], inplace=True)
 
@@ -518,7 +521,7 @@ class ModelTrainerDNN:
             if self.notebook:
                 plt.show()
             else:
-                plt.savefig(f"./stores/{dataset_str.lower()}ing_loss_graph_{timestamp}.jpg")
+                plt.savefig(f"./stores/{dataset_str.lower()}ing_loss_graph_{timestamp}.png")
 
         # Accuracy Graph
         plt.figure(figsize=(30, 10))
@@ -526,18 +529,21 @@ class ModelTrainerDNN:
         plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], "--r", "1")
         plt.xlabel("True Value")
         plt.ylabel("Predicted Value")
-        plt.title("Accuracy Graph (y=x is 100%)")
+        plt.title("Accuracy Graph (y=x is 100% accuracy)")
         plt.legend()
 
         if self.notebook:
             plt.show()
         else:
-            plt.savefig(f"./stores/{dataset_str.lower()}_accuracy_graph_{timestamp}.jpg")
+            plt.savefig(f"./stores/{dataset_str.lower()}_accuracy_graph_{timestamp}.png")
 
         # TT Behaviour Graph
-        plt.figure(figsize=(30, 10))
-        plt.scatter(np.arange(len(y_true)), y_true, label="True Value")  # ascending order
-        plt.plot(np.arange(len(y_true)), y_pred, "r", label="Predicted Value")
+        plt.figure(figsize=(90, 30))
+        sorted_indices = np.argsort(y_true)
+        sorted_y_true = y_true[sorted_indices]
+        sorted_y_pred = y_pred[sorted_indices]
+        plt.scatter(np.arange(len(sorted_y_true)), sorted_y_true, label="True Value")  # ascending order
+        plt.plot(np.arange(len(sorted_y_pred)), sorted_y_pred, "r", label="Predicted Value")
         plt.xlabel("Index")
         plt.ylabel("Time (min)")
         plt.title("Curve of TT and Predicted TT functions")
@@ -546,7 +552,7 @@ class ModelTrainerDNN:
         if self.notebook:
             plt.show()
         else:
-            plt.savefig(f"./stores/{dataset_str.lower()}_tt_curve_graph_{timestamp}.jpg")
+            plt.savefig(f"./stores/{dataset_str.lower()}_tt_curve_graph_{timestamp}.png")
 
     def compute_feature_importance_pfi(
         self, feature_names, n_shuffles: int = 10, criteria: str = "mse", plot: bool = True, method: str = "standard",

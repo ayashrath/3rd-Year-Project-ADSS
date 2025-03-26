@@ -4,3 +4,4 @@
 *.joblib
 *.onnx
 venv
+*.jpg
