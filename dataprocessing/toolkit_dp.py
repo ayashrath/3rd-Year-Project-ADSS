@@ -58,36 +58,42 @@ class DatasetProcessor:
                 print(f"{task:<20}: [{status_symbol}]")  # incase it bleeds out
         print("-------------------------")
 
-    def load_adsb(self):
-        if self.status["loaadsb"]:
+    def load_adsb(self, clean_path: str = None):
+        if self.status["load"]["adsb"]:
             raise Exception("Has already been loaded")
 
-        self.adsb_df = pd.read_csv(self.adsb_path)
-        self.status["loaadsb"] = True
+        if clean_path is not None:
+            self.adsb_df = pd.read_csv(self.adsb_path)
+        else:
+            self.adsb_path = clean_path
+            self.adsb_df = pd.read_csv(self.adsb_path)
+            self.status["clean"]["adsb"] = True  # as ADSB takes a while to process - so no point operating if exists
+
+        self.status["load"]["adsb"] = True
 
     def load_met(self):
-        if self.status["loamet"]:
+        if self.status["load"]["met"]:
             raise Exception("Has already been loaded")
 
         self.met_df = pd.read_csv(self.met_path)
-        self.status["loamet"] = True
+        self.status["load"]["met"] = True
 
     def load_plan(self):
-        if self.status["loaplan"]:
+        if self.status["load"]["plan"]:
             raise Exception("Has already been loaded")
 
         self.plan_df = pd.read_csv(self.plan_path)
-        self.status["loaplan"] = True
+        self.status["load"]["plan"] = True
 
     def load_radar(self):
-        if self.status["loaradar"]:
+        if self.status["load"]["radar"]:
             raise Exception("Has already been loaded")
 
         self.radar_df = pd.read_csv(self.radar_path)
-        self.status["loaradar"] = True
+        self.status["load"]["radar"] = True
 
     def load_features(self):
-        if self.status["loafeatures"]:
+        if self.status["load"]["features"]:
             raise Exception("Has already been loaded")
 
         if not self.features_month_sep:
@@ -95,7 +101,7 @@ class DatasetProcessor:
         else:
             file_names = [f"{self.features_path}/{file}" for file in os.listdir(self.features_path)]
             self.features_df = pd.concat([pd.read_csv(path) for path in file_names]).reset_index(drop=True)
-        self.status["features"] = True
+        self.status["load"]["features"] = True
 
     def load_all(self):
         if True in self.status["load"].values():
@@ -114,6 +120,18 @@ class DatasetProcessor:
         if not self.status["load"]["radar"]:
             raise Exception("The dataset has not yet been loaded")
 
+        self.radar_df = self.radar_df[["mode_s_hex", "datatime_utc", "climb_rate_calc"]].dropna(
+            subset=["mode_s_hex", "climb_rate_calc"]
+        )  # as are essential cols, so if they don't exist then drop
+
+        self.radar_df['datetime_utc'] = pd.to_datetime(self.radar_df['datetime_utc'])  # self explainatory
+        self.radar_df['unix_time'] = self.radar_df['datetime_utc'].astype(int) / 10**9  # cvt unixtime
+
+        self.radar_df = self.radar_df.groupby('mode_s_hex').apply(
+            lambda x: x.sort_values('unix_time')
+        ).reset_index(drop=True)  # groups them so would be easier to calc tt later
+        self.radar_df = self.radar_df[self.radar_df['climb_rate_calc'] != 0]  # removes points when climb = 0
+
         self.status["clean"]["radar"] = True
 
     def clean_adsb(self):
@@ -126,6 +144,16 @@ class DatasetProcessor:
         if not self.status["load"]["met"]:
             raise Exception("The dataset has not yet been loaded")
 
+        self.met_df.drop(columns=['Unnamed: 0.1','Unnamed: 0'], axis=1, inplace=True)  # represent ind in 2 cols
+        self.met_df = self.met_df.dropna(axis=1, how='all')  # 0 entries
+        self.met_df.drop(columns='wind_rose_dir', axis=1, inplace=True)  # another col represents this data, but better
+        self.df_met['datetime'] = pd.to_datetime(self.df_met['datetime'])  # makes sense man
+
+        self.df_met['base_viz_m'] = self.df_met['base_viz_m'].replace('> 10k','9999')  # makes everything a float
+        self.df_met['base_viz_m'] = self.df_met['base_viz_m'].astype(float)
+
+        self.df_met = self.df_met.drop(self.df_met[self.df_met['windspeed_kts'] >= 50].index)  # >= 50 are outliers
+
         self.status["clean"]["met"] = True
 
     def clean_plan(self):
@@ -137,6 +165,8 @@ class DatasetProcessor:
     def clean_features(self):
         if not self.status["load"]["features"]:
             raise Exception("The dataset has not yet been loaded")
+
+        # doesn't need cleaning as should be cleaned already - created as might add some pre-processing if needed
 
         self.status["clean"]["features"] = True
 
@@ -156,6 +186,14 @@ class DatasetProcessor:
     def generate_tt(self):
         if not self.status["clean"]["radar"] or not self.status["clean"]["adsb"]:
             raise Exception("Either or both the datasets - ADSB and Radar have not been loaded/cleaned")
+
+        # radar
+        self.radar_df = self.radar_df[(self.radar_df['time_diff'] <= 86400) & (self.radar_df['time_diff'] >= 900)]
+        self.radar_df = self.radar_df.sort_values(by='time_diff')  # does the calc
+
+        # adsb :(
+
+        # merge
 
         self.status["generate"]["turnaround_time"] = True
 

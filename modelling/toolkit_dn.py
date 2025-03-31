@@ -181,14 +181,14 @@ class Dataset:
             df["end_datetime"] = pd.to_datetime(df["end_datetime"], errors="coerce")
 
             for prefix in ["start", "end"]:
-                df[f"{prefix} year"] = df[f"{prefix}_datetime"].dt.year
+                # df[f"{prefix} year"] = df[f"{prefix}_datetime"].dt.year  # useless as all = 2021
                 df[f"{prefix} month"] = df[f"{prefix}_datetime"].dt.month
                 df[f"{prefix} day"] = df[f"{prefix}_datetime"].dt.day
                 df[f"{prefix} hour sin"] = np.sin(2 * np.pi * df[f"{prefix}_datetime"].dt.hour / 24) + 1
                 df[f"{prefix} hour cos"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.hour / 24) + 1
                 df[f"{prefix} minute sin"] = np.sin(2 * np.pi * df[f"{prefix}_datetime"].dt.minute / 60) + 1
                 df[f"{prefix} minute cos"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.minute / 60) + 1
-                df[f"{prefix} second sin"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.second / 60) + 1 
+                df[f"{prefix} second sin"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.second / 60) + 1
                 df[f"{prefix} second cos"] = np.cos(2 * np.pi * df[f"{prefix}_datetime"].dt.second / 60) + 1
 
             df.drop(columns=["start_datetime", "end_datetime"], inplace=True)
