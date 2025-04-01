@@ -6,3 +6,4 @@
 venv
 *.jpg
 *.db
+*.db-journal

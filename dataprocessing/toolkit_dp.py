@@ -432,7 +432,7 @@ class DatasetProcessor:
         # create tt table
         cur.execute(
             """
-                CREATE TABLE IF NOT EXISTS TurnaroundTime (
+            CREATE TABLE IF NOT EXISTS TurnaroundTime (
                 Hexcode TEXT NOT NULL,
                 Turnaround INT NOT NULL,
                 StartTime INT PRIMARY KEY,
@@ -464,7 +464,7 @@ class DatasetProcessor:
                 CurrentTime AS EndTime,
                 (CurrentTime - PrevTime) AS Turnaround
             FROM TimeDiffs
-            WHERE (CurrentTime - PrevTime) >= ? AND (CurrentTime - PrevTime) BETWEEN ? AND ?
+            WHERE (CurrentTime - PrevTime) <= ? AND (CurrentTime - PrevTime) BETWEEN ? AND ?
         """, (thresh, min_tt, max_time),
         )
 
@@ -486,7 +486,11 @@ class DatasetProcessor:
         if save_disk:
             self.save_current_adsb("tt_adsb.db")
 
-    def generate_plan_features(self, country_icao: str = "EG"):
+    def generate_plan_features(self, country_icao: str = "EG", plan_gen_features_path=None, save_csv=True):
+        if plan_gen_features_path is not None:
+            self.plan_df = pd.read_csv(plan_gen_features_path)
+            return 0
+
         if not self.status["clean"]["features"]:
             raise Exception("Feature dataset has either not been cleaner or not even loaded")
 
@@ -561,6 +565,9 @@ class DatasetProcessor:
         # Applying the title of column
         self.plan_df["Class"] = self.plan_df.apply(classify_class, axis=1)
 
+        if save_csv:
+            self.plan_df.to_csv("./temp/plan_gen_features.csv")
+
         self.status["generate"]["plan_features"] = True
 
     def merge_datasets(self):  # not implemented
@@ -587,11 +594,11 @@ class DatasetProcessor:
 
 if __name__ == "__main__":
     processor = DatasetProcessor()
-    processor.load_all()
+    processor.load_all("./temp/adsb_clean.db")
     processor.print_status()
     processor.clean_all()
     processor.print_status()
-    processor.generate_plan_features()
+    processor.generate_plan_features("./temp/.csv")
     processor.print_status()
-    processor.generate_tt()
+    processor.generate_tt("./temp")
     processor.print_status()
