@@ -147,7 +147,6 @@ class DatasetProcessor:
         self.radar_df = self.radar_df[self.radar_df["climb_rate_calc"] != 0]  # removes points when climb = 0
 
         self.status["clean"]["radar"] = True
-        print("Radar Cleaned")
 
     def clean_adsb(self, save_disk: bool = True):
         if not self.status["load"]["adsb"]:
@@ -247,7 +246,6 @@ class DatasetProcessor:
 
         if save_disk:
             self.save_current_adsb("adsb_clean.db")
-        print("ADS-B Cleaned")
 
     def clean_met(self):
         if not self.status["load"]["met"]:
@@ -264,7 +262,6 @@ class DatasetProcessor:
         self.met_df = self.met_df.drop(self.met_df[self.met_df["windspeed_kts"] >= 50].index)  # >= 50 are outliers
 
         self.status["clean"]["met"] = True
-        print("Metrological Cleaned")
 
     def clean_plan(self):
         if not self.status["load"]["plan"]:
@@ -279,7 +276,6 @@ class DatasetProcessor:
         )  # making na values into 255 (why idk)
 
         self.status["clean"]["plan"] = True
-        print("Flight Plan Cleaned")
 
     def clean_features(self):
         if not self.status["load"]["features"]:
@@ -288,7 +284,6 @@ class DatasetProcessor:
         # doesn't need cleaning as should be cleaned already - created as might add some pre-processing if needed
 
         self.status["clean"]["features"] = True
-        print("Feauture Cleaned")
 
     def clean_all(self):
         if False in self.status["load"].values():
@@ -592,11 +587,11 @@ class DatasetProcessor:
 
 if __name__ == "__main__":
     processor = DatasetProcessor()
-    processor.load_all("./temp/adsb_clean.db")
+    processor.load_all()
     processor.print_status()
     processor.clean_all()
     processor.print_status()
-    # processor.generate_plan_features()
-    # rocessor.print_status()
+    processor.generate_plan_features()
+    processor.print_status()
     processor.generate_tt()
     processor.print_status()
