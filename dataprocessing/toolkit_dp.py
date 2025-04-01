@@ -432,98 +432,61 @@ class DatasetProcessor:
         chunk_size - divide into chunks to not overload the mem
         """
 
-        read_cur = self.adsb_conn.cursor()
-        write_cur = self.adsb_conn.cursor()
+        cur = self.adsb_conn.cursor()
 
-        write_cur.execute(
+        # create tt table
+        cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS TurnaroundTime (
+                CREATE TABLE IF NOT EXISTS TurnaroundTime (
                 Hexcode TEXT NOT NULL,
                 Turnaround INT NOT NULL,
                 StartTime INT PRIMARY KEY,
                 EndTime INT NOT NULL
             )
             """
-        )  # create table to store results
-
+        )
         self.adsb_conn.commit()
 
-        offset = 0  # for hex batches
+        # makes col using lag which would be - current time, prev time with groups of hex and order of unixtime
+        cur.execute(
+            """
+            CREATE TEMP TABLE IF NOT EXISTS TimeDiffs AS
+            SELECT
+                HexCode,
+                Unixtime AS CurrentTime,
+                LAG(Unixtime) OVER (PARTITION BY HexCode ORDER BY Unixtime) AS PrevTime
+            FROM ADSB
+            """
+        )
 
-        while True:
-            print(offset * chunk_size)
-            read_cur.execute(
-                """
-                SELECT DISTINCT HexCode
-                FROM ADSB
-                ORDER BY HexCode
-                LIMIT ? OFFSET ?
-                """, (hex_batch_size, offset)
-            )  # get hex
+        # get the time diff and checks them
+        cur.execute(
+            """
+            CREATE TEMP TABLE IF NOT EXISTS FilteredTimeDiffs AS
+            SELECT
+                HexCode,
+                PrevTime AS StartTime,
+                CurrentTime AS EndTime,
+                (CurrentTime - PrevTime) AS Turnaround
+            FROM TimeDiffs
+            WHERE (CurrentTime - PrevTime) >= ? AND (CurrentTime - PrevTime) BETWEEN ? AND ?
+        """, (thresh, min_tt, max_time),
+        )
 
-            hex_batch = [row[0] for row in read_cur.fetchall()]
-            if not hex_batch:
-                break  # aircrafts exhausted
+        # inserts stuff back
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO TurnaroundTime (Hexcode, Turnaround, StartTime, EndTime)
+            SELECT HexCode, Turnaround, StartTime, EndTime
+            FROM FilteredTimeDiffs
+            """
+        )
+        self.adsb_conn.commit()
 
-            offset += hex_batch_size
-
-            for hexcode in hex_batch:
-                # check if already done
-                write_cur.execute("SELECT 1 FROM TurnaroundTime WHERE Hexcode = ? LIMIT 1", (hexcode,))
-                if write_cur.fetchone():
-                    continue
-
-                # get times
-                read_cur.execute("""
-                    SELECT Unixtime
-                    FROM ADSB
-                    WHERE HexCode = ?
-                    ORDER BY Unixtime
-                """, (hexcode,))
-
-                batch_results = []
-                prev_time = None
-                st_time = None
-
-                while True:
-                    chunk = read_cur.fetchmany(chunk_size)
-                    if not chunk:
-                        break  # chunk read
-
-                    for (time, ) in chunk:  # 1 element tuple
-                        if st_time is None:
-                            st_time = time
-                        elif (time - prev_time) >= thresh:
-                            turnaround = prev_time - st_time
-                            if min_tt <= turnaround <= max_time:
-                                batch_results.append((
-                                    hexcode,
-                                    turnaround,
-                                    st_time,
-                                    prev_time
-                                ))
-                            st_time = time
-                        prev_time = time
-
-                    # insert stuff
-                    if batch_results:
-                        write_cur.executemany(
-                            """
-                            INSERT OR IGNORE INTO TurnaroundTime
-                            VALUES (?, ?, ?, ?)
-                            """, batch_results)
-                        self.adsb_conn.commit()
-                        batch_results = []
-
-                # last batch
-                if st_time is not None:
-                    turnaround = prev_time - st_time
-                    if min_tt <= turnaround <= max_time:
-                        write_cur.execute("""
-                            INSERT OR IGNORE INTO TurnaroundTime
-                            VALUES (?, ?, ?, ?)
-                        """, (hexcode, turnaround, st_time, prev_time))
-                        self.adsb_conn.commit()
+        # drop the temp tables
+        cur.execute("DROP TABLE IF EXISTS TimeDiffs")
+        cur.execute("DROP TABLE IF EXISTS FilteredTimeDiffs")
+        self.adsb_conn.commit()
 
         if save_disk:
             self.save_current_adsb("tt_adsb.db")
