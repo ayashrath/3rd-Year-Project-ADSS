@@ -6,3 +6,4 @@ pandas
 joblib
 tqdm
 IPython
+geopy
