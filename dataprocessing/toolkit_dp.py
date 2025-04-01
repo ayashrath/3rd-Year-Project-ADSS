@@ -556,13 +556,13 @@ class DatasetProcessor:
 
         self.status["generate"]["plan_features"] = True
 
-    def merge_datasets(self):
+    def merge_datasets(self):  # not implemented
         if False in self.status["generate"].values():
             raise Exception("Not all necessary data has been processed in the datasets")
 
         self.status["final"]["merge_datasets"] = True
 
-    def create_train_test(self):
+    def create_train_test(self):  # not implemented
         if not self.status["final"]["merge_datasets"]:
             raise Exception("Dataset has not yet been merged")
 
