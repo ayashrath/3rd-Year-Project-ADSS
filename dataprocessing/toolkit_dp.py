@@ -65,6 +65,9 @@ class DatasetProcessor:
         if self.status["load"]["adsb"]:
             raise Exception("Has already been loaded")
 
+        self.adsb_conn = sqlite3.connect(":memory:")  # just to speed up my life
+        self.adsb_df.to_sql("ADSB", self.adsb_conn, index=False)  # loading can take some time
+
         if clean_path is not None:
             self.adsb_df = pd.read_csv(self.adsb_path)
         else:
@@ -137,9 +140,102 @@ class DatasetProcessor:
 
         self.status["clean"]["radar"] = True
 
-    def clean_adsb(self):
+    def clean_adsb(self, save_disk: bool = True):
         if not self.status["load"]["adsb"]:
             raise Exception("The dataset has not yet been loaded")
+
+        cur = self.adsb_conn.cursor()
+
+        cur.execute(
+            """
+            ALTER TABLE ADSB DROP COLUMN "Unnamed: 0";
+            """
+        )  # remove unnecessary col
+
+        cur.execute(
+            """
+            DELETE
+            FROM ADSB
+            WHERE FRN140GHGeometricHeight IS NOT NULL OR FRN145FLFlightLevel IS NOT NULL;
+            """
+        )  # entries which shows aircraft has some height as if no height then these entries are NULL
+
+        cur.executescript(
+            """
+            ALTER TABLE ADSB DROP COLUMN "FRN145FLFlightLevel";
+            ALTER TABLE ADSB DROP COLUMN "FRN140GHGeometricHeight";
+            """
+        )  # no longer needed
+
+        # not checking the lat and long range as they were ok in ADB-S dataset we had + should be as ADS-B readings
+        # can only be taken when in range
+
+        cur.executescript(
+            """
+            ALTER TABLE ADSB DROP COLUMN "FRN131HRPWCFloatingPointLat";
+            ALTER TABLE ADSB DROP COLUMN "FRN131HRPWCFloatingPointLong";
+            """
+        )  # rm lat and long
+
+        cur.executescript(
+            """
+            ALTER TABLE ADSB
+            RENAME COLUMN "FRN73TMRPDateTimeOfMessageRec" TO "Timestamp";
+
+            ALTER TABLE ADSB
+            RENAME COLUMN "FRN170TITargetId" TO "Callsign";
+
+            ALTER TABLE ADSB
+            RENAME COLUMN "FRN80TATargetAddress" TO "HexCode";
+            """
+        )  # more readable names
+
+        cur.execute(
+            """
+            UPDATE ADSB
+            SET Timestamp = strftime('%s',
+                substr(Timestamp, 8, 4) || '-' ||
+                CASE substr(Timestamp, 4, 3)
+                    WHEN 'Jan' THEN '01'
+                    WHEN 'Feb' THEN '02'
+                    WHEN 'Mar' THEN '03'
+                    WHEN 'Apr' THEN '04'
+                    WHEN 'May' THEN '05'
+                    WHEN 'Jun' THEN '06'
+                    WHEN 'Jul' THEN '07'
+                    WHEN 'Aug' THEN '08'
+                    WHEN 'Sep' THEN '09'
+                    WHEN 'Oct' THEN '10'
+                    WHEN 'Nov' THEN '11'
+                    WHEN 'Dec' THEN '12'
+                END || '-' ||
+                substr(Timestamp, 1, 2) || ' ' ||
+                substr(Timestamp, 13, 8)
+            );
+            """
+        )  # change it into more parsable
+
+        cur.executescript(
+            """
+            ALTER TABLE ADSB ADD COLUMN UnixTime INTEGER;
+
+            UPDATE ADSB
+            SET UnixTime = CAST(Timestamp AS INTEGER);
+
+            ALTER TABLE ADSB DROP COLUMN Timestamp;  
+            """
+        )  # unix time
+
+        cur.executescript(
+            """
+            ALTER TABLE ADSB DROP COLUMN "Callsign";
+            """
+        )  # no longer needed - as we already have hex
+
+        self.adsb_conn.commit()
+
+        if save_disk:
+            self.save_current_adsb("adsb_clean.db")
 
         self.status["clean"]["adsb"] = True
 
@@ -147,12 +243,12 @@ class DatasetProcessor:
         if not self.status["load"]["met"]:
             raise Exception("The dataset has not yet been loaded")
 
-        self.met_df.drop(columns=["Unnamed: 0.1","Unnamed: 0"], axis=1, inplace=True)  # represent ind in 2 cols
+        self.met_df.drop(columns=["Unnamed: 0.1", "Unnamed: 0"], axis=1, inplace=True)  # represent ind in 2 cols
         self.met_df = self.met_df.dropna(axis=1, how="all")  # 0 entries
         self.met_df.drop(columns="wind_rose_dir", axis=1, inplace=True)  # another col represents this data, but better
         self.df_met["datetime"] = pd.to_datetime(self.df_met["datetime"])  # makes sense man
 
-        self.df_met["base_viz_m"] = self.df_met["base_viz_m"].replace("> 10k","9999")  # makes everything a float
+        self.df_met["base_viz_m"] = self.df_met["base_viz_m"].replace("> 10k", "9999")  # makes everything a float
         self.df_met["base_viz_m"] = self.df_met["base_viz_m"].astype(float)
 
         self.df_met = self.df_met.drop(self.df_met[self.df_met["windspeed_kts"] >= 50].index)  # >= 50 are outliers
@@ -177,7 +273,7 @@ class DatasetProcessor:
         if not self.status["load"]["features"]:
             raise Exception("The dataset has not yet been loaded")
 
-        # doesn"t need cleaning as should be cleaned already - created as might add some pre-processing if needed
+        # doesn't need cleaning as should be cleaned already - created as might add some pre-processing if needed
 
         self.status["clean"]["features"] = True
 
@@ -194,26 +290,201 @@ class DatasetProcessor:
         for func in self.status["clean"]:
             self.status["clean"][func] = True
 
-    def generate_tt(self):
+    def generate_tt(self, adsb_t_path=None, min_tt: int = 900, max_tt: int = 86400):
         if not self.status["clean"]["radar"] or not self.status["clean"]["adsb"]:
             raise Exception("Either or both the datasets - ADSB and Radar have not been loaded/cleaned")
 
         # radar
-        self.radar_df = self.radar_df[(self.radar_df["time_diff"] <= 86400) & (self.radar_df["time_diff"] >= 900)]
-        self.radar_df = self.radar_df.sort_values(by="time_diff")  # does the calc
+        self.radar_t_df = self.radar_df[(self.radar_df["time_diff"] <= max_tt) & (self.radar_df["time_diff"] >= min_tt)]
+        self.radar_t_df = self.radar_t_df.sort_values(by="time_diff")  # does the calc
 
         # adsb :(
+        if adsb_t_path is not None:
+            self.adsb_t_df = pd.read_csv(adsb_t_path)
+        else:
+            pass
+
+        self._calc_t_adsb(min_tt=min_tt, max_time=max_tt)
+
+        self.adsb_conn.commit()
+        self.adsb_conn.close()
 
         # merge
+        self._merge_adsb_radar_tt()
 
         self.status["generate"]["turnaround_time"] = True
 
-    def generate_plan_features(self, country_icao: str = "EG", ):
+    def _merge_adsb_radar_tt(self, tt_diff_thresh=100*60, st_diff_thresh=60*60):
+        """
+        100 mins choosen due to results from pattern seen when diff observed - plots available at CW2 Slides
+        60 mins again from results from plot patterns
+
+        ADS-B more accurate for TT than Radar
+        """
+        # unique hex-s
+        unique_hex_codes = self.adsb_t_df['HexCode'].unique()
+
+        merged_data = []
+
+        for hexcode in unique_hex_codes:
+            adsb_data = self.adsb_t_df[self.adsb_t_df['HexCode'] == hexcode]
+            radar_data = self.radar_t_df[self.radar_t_df['mode_s_hex'] == hexcode]
+
+            # incase the entry not in radar
+            if radar_data.empty:
+                continue
+
+            # cvt into lists of tuples (time_diff, start_time) for comparison
+            adsb_times = adsb_data[['Turnaround_min', 'StartTime']].values
+            radar_times = radar_data[['time_diff', 'start_unit']].values
+
+            # matching pairs where start times are within 1 hour (3600 seconds)
+            matched_pairs = []
+            adsb_matched = set()
+            radar_matched = set()
+
+            for i, (adsb_tt, adsb_st) in enumerate(adsb_times):
+                for j, (radar_tt, radar_st) in enumerate(radar_times):
+                    if abs(adsb_st - radar_st) < st_diff_thresh:  # st thresh
+                        if i not in adsb_matched and j not in radar_matched:
+                            matched_pairs.append({
+                                'HexCode': hexcode,
+                                'RadarTimeDiff': radar_tt,
+                                'RadarStartTime': radar_st,
+                                'ADSBTimeDiff': adsb_tt,
+                                'ADSBStartTime': adsb_st,
+                                'StartDiff': abs(radar_st - adsb_st),
+                                'TTDiff': abs(radar_tt - adsb_tt)
+                            })
+                            adsb_matched.add(i)
+                            radar_matched.add(j)
+
+            # add the matched pairs
+            merged_data.extend(matched_pairs)
+
+        # cvt into df
+        merged_df = pd.DataFrame(merged_data)
+
+        # filter further but on tt
+        filtered_df = merged_df[merged_df['TTDiff'] <= tt_diff_thresh]  # tt thresh
+
+        # stored
+        self.tt_df = filtered_df
+
+    def _calc_tt_adsb(
+        self, thresh: int = 3600, min_tt: int = 900, max_time: int = 86400, chunk_size: int = 100000,
+        hex_batch_size: int = 10, save_disk: bool = True
+    ):
+        """
+        thresh - The threshold by which the times are divided into batches. Default is 1 hrs (appropriate cutoff
+                    based on time delta plots and also because in 1 hr there are a few flight paths from manchester)
+        min_tt - less than this is removed (900) - as 15 mins is considered to be too good.
+        max_time - 1 day
+        chunk_size - divide into chunks to not overload the mem
+        """
+
+        read_cur = self.adsb_conn.cursor()
+        write_cur = self.adsb_conn.cursor()
+
+        write_cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS TurnaroundTime (
+                Hexcode TEXT NOT NULL,
+                Turnaround INT NOT NULL,
+                StartTime INT PRIMARY KEY,
+                EndTime INT NOT NULL,
+                CHECK(Turnaround BETWEEN ? AND ?)
+            )
+            """, (min_tt, max_time)
+        )  # create table to store results
+
+        self.adsb_conn.commit()
+
+        offset = 0  # for hex batches
+
+        while True:
+            read_cur.execute(
+                """
+                SELECT DISTINCT HexCode
+                FROM ADSB
+                ORDER BY HexCode
+                LIMIT ? OFFSET ?
+                """, (hex_batch_size, offset)
+            )  # get hex
+
+            hex_batch = [row[0] for row in read_cur.fetchall()]
+            if not hex_batch:
+                break  # aircrafts exhausted
+
+            offset += hex_batch_size
+
+            for hexcode in hex_batch:
+                # check if already done
+                write_cur.execute("SELECT 1 FROM TurnaroundTime WHERE Hexcode = ? LIMIT 1", (hexcode,))
+                if write_cur.fetchone():
+                    continue
+
+                # get times
+                read_cur.execute("""
+                    SELECT Unixtime
+                    FROM ADSB
+                    WHERE Hex = ?
+                    ORDER BY Unixtime
+                """, (hexcode,))
+
+                batch_results = []
+                prev_time = None
+                st_time = None
+
+                while True:
+                    chunk = read_cur.fetchmany(chunk_size)
+                    if not chunk:
+                        break  # chunk read
+
+                    for (time, ) in chunk:  # 1 element tuple
+                        if st_time is None:
+                            st_time = time
+                        elif (time - prev_time) >= thresh:
+                            turnaround = prev_time - st_time
+                            if min_tt <= turnaround <= max_time:
+                                batch_results.append((
+                                    hexcode,
+                                    turnaround,
+                                    st_time,
+                                    prev_time
+                                ))
+                            st_time = time
+                        prev_time = time
+
+                    # insert stuff
+                    if batch_results:
+                        write_cur.executemany(
+                            """
+                            INSERT OR IGNORE INTO TurnaroundTime
+                            VALUES (?, ?, ?, ?)
+                            """, batch_results)
+                        self.adsb_conn.commit()
+                        batch_results = []
+
+                # last batch
+                if st_time is not None:
+                    turnaround = prev_time - st_time
+                    if min_tt <= turnaround <= max_time:
+                        write_cur.execute("""
+                            INSERT OR IGNORE INTO TurnaroundTime
+                            VALUES (?, ?, ?, ?)
+                        """, (hexcode, turnaround, st_time, prev_time))
+                        self.adsb_conn.commit()
+
+        if save_disk:
+            self.save_current_adsb("tt_adsb.db")
+
+    def generate_plan_features(self, country_icao: str = "EG"):
         if not self.status["clean"]["features"]:
             raise Exception("Feature dataset has either not been cleaner or not even loaded")
 
         airports = sorted(set(self.plan_df["origin"]).union(set(self.plan_df["dest"])))  # makes list of all aircrafts
-        uk_airports = [airport for airport in airports if airport.startswith(country_icao)]  
+        uk_airports = [airport for airport in airports if airport.startswith(country_icao)]
         # as ICAO gives EGxx for UK airport (for UK there are 3 airports that should not be considered domestic)
         # 2 in Antartica and 1 in Falkland Islands - But there are no flights from Manchester that go there :)
 
@@ -297,7 +568,19 @@ class DatasetProcessor:
 
         self.status["final"]["create_train_test"] = True
 
+    def save_current_adsb(self, name):
+        if not self.status["clean"]["adsb"]:
+            raise Exception("The ADSB dataset has not been cleaned yet")
+
+        disk_conn = sqlite3.connect(f"temp/{name}.db")
+        with disk_conn:
+            self.adsb_conn.backup(disk_conn)
+        disk_conn.close()
+
 
 if __name__ == "__main__":
     processor = DatasetProcessor()
+    processor.load_all()
+    processor.print_status()
+    processor.clean_all()
     processor.print_status()
