@@ -458,14 +458,21 @@ class DatasetProcessor:
         cur.execute(
             """
             CREATE TEMP TABLE IF NOT EXISTS FilteredTimeDiffs AS
-            SELECT
-                HexCode,
-                PrevTime AS StartTime,
-                CurrentTime AS EndTime,
-                (CurrentTime - PrevTime) AS Turnaround
-            FROM TimeDiffs
-            WHERE (CurrentTime - PrevTime) <= ? AND (CurrentTime - PrevTime) BETWEEN ? AND ?
-        """, (thresh, min_tt, max_time),
+            WITH CumulativeTime AS (
+                SELECT
+                    HexCode,
+                    PrevTime AS StartTime,
+                    CurrentTime AS EndTime,
+                    SUM(CurrentTime - PrevTime) OVER (
+                        PARTITION BY HexCode ORDER BY CurrentTime
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                    ) AS Turnaround
+                FROM TimeDiffs
+            )
+            SELECT *
+            FROM CumulativeTime
+            WHERE Turnaround <= ? AND Turnaround BETWEEN ? AND ?
+            """, (thresh, min_tt, max_time),
         )
 
         # inserts stuff back
